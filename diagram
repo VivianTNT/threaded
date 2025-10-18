@@ -1,0 +1,65 @@
+                                   ┌───────────────────────────┐
+                                   │         WEB APP           │
+                                   │  - Onboarding (prefs)     │
+                                   │  - Recommendations UI     │
+                                   │  - Feedback (like/save)   │
+                                   └──────────────┬────────────┘
+                                                  │  HTTPS
+                                                  ▼
+                              ┌─────────────────────────────────────┐
+                              │            BACKEND API              │
+                              │  /recommend /similar /search        │
+                              │  /track (events) /ingest/products   │
+                              └──────┬───────────────┬──────────────┘
+                                     │               │
+                                     │               │ events/read
+                                     │               ▼
+                                     │       ┌───────────────┐
+                                     │       │     RANKER    │
+                                     │       │  (content+CF  │
+                                     │       │   + rules)    │
+                                     │       └───────┬───────┘
+                                     │               │ ANN
+                                     │               ▼
+                                     │       ┌───────────────┐
+                                     │       │  VECTOR INDEX │
+                                     │       │ (pgvector/FAISS)
+                                     │       └───────┬───────┘
+                                     │               │
+                                     ▼               │
+                          ┌───────────────────┐      │
+                          │     POSTGRES      │◄─────┘
+                          │ users/items/      │
+                          │ interactions/...  │
+                          └──────┬───────┬────┘
+                                 │       │ upsert new items
+                                 │       ▼
+                                 │  ┌───────────────┐
+                                 │  │ EMBEDDING JOB │  (text+image → vectors)
+                                 │  └──────┬────────┘
+                                 │         │ writes
+                                 │         ▼
+                                 │  ┌───────────────┐
+                                 │  │  VECTOR INDEX │
+                                 │  └───────────────┘
+                                 │
+                                 │
+     ┌───────────────────────────┴──────────────────────────────────────────┐
+     │                         AGENT (DISCOVERY)                            │
+     │  Planner → Tools → Critic/Quality                                    │
+     │  - Plan domains/queries                                              │
+     │  - Scrape & extract products                                         │
+     │  - Validate & dedupe                                                 │
+     │  - Upsert to DB (then embed/index)                                   │
+     └───────────────┬───────────────────────────────┬──────────────────────┘
+                     │                               │
+                     │ jobs/URLs                     │ HTML/images
+                     ▼                               ▼
+              ┌───────────────┐               ┌───────────────┐
+              │   QUEUE (SQS) │               │      S3       │
+              └──────┬────────┘               │  images/html  │
+                     │                        └───────────────┘
+                     ▼
+              ┌───────────────┐
+              │  SCRAPERS     │  (Playwright/Selenium)
+              └───────────────┘
