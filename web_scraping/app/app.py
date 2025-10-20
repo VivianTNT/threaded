@@ -1,3 +1,8 @@
+import os, sys
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .../web_scraping
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
 import streamlit as st, orjson, json, numpy as np, faiss
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
