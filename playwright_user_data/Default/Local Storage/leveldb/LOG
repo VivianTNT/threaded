@@ -1,0 +1,6 @@
+2025/11/10-17:03:08.539 5003 Reusing MANIFEST /Users/katherinelu/Desktop/senior_design/threaded/playwright_user_data/Default/Local Storage/leveldb/MANIFEST-000001
+2025/11/10-17:03:08.548 5003 Recovering log #14
+2025/11/10-17:03:08.549 5003 Reusing old log /Users/katherinelu/Desktop/senior_design/threaded/playwright_user_data/Default/Local Storage/leveldb/000014.log 
+2025/11/10-17:03:42.274 4b03 Level-0 table #18: started
+2025/11/10-17:03:42.283 4b03 Level-0 table #18: 59188 bytes OK
+2025/11/10-17:03:42.294 4b03 Delete type=0 #14
