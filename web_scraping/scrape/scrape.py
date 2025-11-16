@@ -7,6 +7,7 @@ from .cache import append_jsonl
 from .parser_generic import extract_generic
 from .normalizer import normalize
 from .adapters import adapter_zara, adapter_uniqlo, adapter_gap
+from .upsert_product import upsert_product
 
 OUT = "items.jsonl"
 
@@ -38,6 +39,19 @@ async def process(url: str, browser):
         raw.update({k:v for k,v in raw_specific.items() if v})
     prod = normalize(url, domain, raw)
     append_jsonl(OUT, orjson.loads(prod.model_dump_json()))
+
+    product_dict = {
+        "product_url": str(prod.url) if prod.url is not None else None,
+        "image_url": str(prod.image_url) if prod.image_url is not None else None,
+        "name": prod.name,
+        "price": prod.price,
+        "currency": prod.currency,
+        "domain": prod.domain,
+        "brand_name": prod.brand,
+        "category": prod.category,
+        "description": prod.description,
+    }
+    upsert_product(product_dict)
     return prod
 
 async def main(urls_file="urls.txt"):
