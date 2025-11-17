@@ -82,3 +82,9 @@ __cache__/
 *.h5
 models/
 checkpoints/
+
+playwright/.cache/
+.playwright/
+.chromium/
+.user-data-dir/
+playwright_user_data/
