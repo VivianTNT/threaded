@@ -1,0 +1,20 @@
+# Large data and model artifacts
+recsys/data/*
+recsys/artifacts/*
+recsys/images/*
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Model checkpoints
+*.pt
+*.joblib
+*.npy
+
+# Logs
+*.log
+
+# Environment
+.venv/
+.env
