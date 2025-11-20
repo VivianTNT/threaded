@@ -11,10 +11,13 @@ try:
     from .schema import Product
     from .discovery_fetcher import init_browser, fetch_html 
     from .parser_generic import extract_generic as generic_parser
+    from .supabase_client import supabase
     
 except ImportError as e:
     print(f"Discovery Agent failed to import core project modules: {e}")
     print("Please ensure you are running this from the 'threaded-main' directory.")
+
+    supabase = None
     
     class Product:
         def __init__(self, name=None, price=None, **kwargs):
@@ -46,7 +49,7 @@ SKIP_DOMAINS = {
     # Miscellaneous
     'mackage.com', 'sunandski.com', 'beginningboutique.com', 'bloomingdales.com',
     'krsaddleshop.com', 'boohoo.com', 'express.com', 'taylorstitch.com', 'hm.com',
-    'arctix.com'
+    'arctix.com', 'princesspolly.com'
 }
 
 # ====================================================================
@@ -219,11 +222,11 @@ async def run_scoping_test(url: str, domain: str, browser_context) -> Optional[t
         html_content = await fetch_html(url, browser_context)
         if not html_content: return None
 
-        # 1. Check Name (basic validity)
+        # Check Name (basic validity)
         product_dict = generic_parser(html_content) 
         product_name = product_dict.get('name')
         
-        # 2. Check for Category Links (retail signal)
+        # Check for Category Links (retail signal)
         parts = urlparse(url)
         base_url = f"{parts.scheme}://{parts.netloc}"
         category_links = find_category_links(html_content, domain, base_url)
@@ -243,20 +246,41 @@ async def run_scoping_test(url: str, domain: str, browser_context) -> Optional[t
 # RESULTS HANDLING (DB Integration Point)
 # ====================================================================
 
-def save_results(product_urls: Set[str]):
+def save_results(results: List[Dict[str, str]]):
     """
-    Handles saving the discovered product URLs.
+    Saves discovered products to Supabase brands table.
     """
-    if not product_urls: return
+    if not results: 
+        return
     
-    # TODO: FUTURE SUPABASE INTEGRATION
+    print(f"\n[DB] Preparing to upload {len(results)} products to Supabase...")
+
+    # Format data for the brands table
+    # Table schema: product_url, name
+    data_to_insert = []
+    for item in results:
+        data_to_insert.append({
+            "product_url": item['url'],
+            "name": item['domain']  # Using domain as the brand name
+        })
     
-    try:
-        with open(RESULTS_FILE_PATH, 'w') as f:
-            f.write('\n'.join(sorted(list(product_urls))))
-        print(f"\n[SUCCESS] Saved {len(product_urls)} product URLs to '{RESULTS_FILE_PATH}'")
-    except IOError as e:
-        print(f"\n[ERROR] Could not write file: {e}")
+    # Upload to Supabase
+    if supabase:
+        try:
+            response = supabase.table('brands').upsert(data_to_insert).execute()
+            print(f"[SUCCESS] Uploaded {len(data_to_insert)} rows to table 'brands'.")
+        except Exception as e:
+            print(f"[ERROR] Database upload failed: {e}")
+    else:
+        print("[WARNING] Supabase client not found. Dumping to file instead.")
+        # Fallback to file if DB fails
+        try:
+            with open(RESULTS_FILE_PATH, 'w') as f:
+                for item in results:
+                    f.write(f"{item['domain']} | {item['url']}\n")
+            print(f"[BACKUP] Saved to file '{RESULTS_FILE_PATH}'")
+        except IOError as e:
+            print(f"[ERROR] Could not write backup file: {e}")
 
 # ====================================================================
 # MAIN CYCLE
@@ -267,34 +291,41 @@ async def run_discovery_cycle(search_queries: List[str]):
     all_seed_urls = []
     
     async with Stealth().use_async(async_playwright()) as p:
+        
+        browser_context = None
         try:
             browser_context = await init_browser(p)
         except Exception as e:
-            print(f" FATAL: {e}"); return
+            print(f" FATAL: Could not initialize browser. {e}")
+            return
 
-        # Discovery (search & scope)
+        # --- Phase 1: Discovery ---
         for query in search_queries:
             all_seed_urls.extend(await get_seed_urls(query, browser_context))
-            await asyncio.sleep(random.randint(1, 3))
+            await asyncio.sleep(random.randint(1, 3)) 
 
         triage_queue = filter_irrelevant_domains(all_seed_urls)
-        print(f"\n[TRIAGE] Identified {len(triage_queue)} unique domains for scoping (after skip list).")
+        print(f"\n[TRIAGE] Identified {len(triage_queue)} unique retail-like domains for scoping.")
 
-        all_category_links = set()
-        
+        all_category_links: Set[str] = set()
         for domain, url in triage_queue.items():
+            print(f"\nTesting Domain: {domain} (URL: {url})")
             result = await run_scoping_test(url, domain, browser_context)
             if result:
                 _, cats = result
                 all_category_links.update(cats)
             await asyncio.sleep(1)
 
-        # Harvest (crawl categories for products)
+        # --- Phase 2: Harvesting ---
         print(f"\n--- Phase 2: Crawling {len(all_category_links)} Categories for Products ---")
-        all_product_links = set()
+        
+        # Use a Set to track unique URLs to avoid duplicates
+        unique_product_urls = set()
+        # Use a List of Dicts to store the final data for Supabase
+        discovered_products: List[Dict[str, str]] = []
 
         for i, cat_url in enumerate(all_category_links):
-            if len(all_product_links) >= MAX_PRODUCTS_TO_FIND:
+            if len(unique_product_urls) >= MAX_PRODUCTS_TO_FIND:
                 print("  [Limit Reached] Stopping crawl.")
                 break
             
@@ -307,10 +338,21 @@ async def run_discovery_cycle(search_queries: List[str]):
                 html = await fetch_html(cat_url, browser_context)
                 if html:
                     prods = find_product_links(html, domain, f"{parts.scheme}://{parts.netloc}")
-                    new_prods = prods - all_product_links
+                    
+                    # Identify truly new products
+                    new_prods = prods - unique_product_urls
+                    
                     if new_prods:
                         print(f"    -> Found {len(new_prods)} new products.")
-                        all_product_links.update(new_prods)
+                        unique_product_urls.update(new_prods)
+                        
+                        # Add to the structured list for DB upload
+                        for p_url in new_prods:
+                            discovered_products.append({
+                                "domain": domain,
+                                "url": p_url
+                            })
+                            
             except Exception as e:
                 print(f"    Error: {e}")
             
@@ -319,7 +361,7 @@ async def run_discovery_cycle(search_queries: List[str]):
         if browser_context: await browser_context.close()
 
     # Save final results
-    save_results(all_product_links)
+    save_results(discovered_products)
     print("\n--- DISCOVERY CYCLE COMPLETE ---")
 
 if __name__ == '__main__':
