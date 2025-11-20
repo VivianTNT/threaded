@@ -1,0 +1,553 @@
+"use client"
+
+import * as React from "react"
+import {
+  ColumnDef,
+  ColumnFiltersState,
+  SortingState,
+  VisibilityState,
+  flexRender,
+  getCoreRowModel,
+  getFilteredRowModel,
+  getPaginationRowModel,
+  getSortedRowModel,
+  useReactTable,
+} from "@tanstack/react-table"
+import { ArrowUpDown, ChevronDown, Eye, Plus, Search, Bookmark, BookmarkCheck } from "lucide-react"
+import { ContextMenuChat } from "@/components/ui/context-menu-chat"
+
+import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { Input } from "@/components/ui/input"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import { Badge } from "@/components/ui/badge"
+import { cn } from "@/lib/utils"
+import { MiningProject, RiskLevel } from "@/lib/types/mining-project"
+import { useWatchlistProjects } from "@/lib/hooks/use-watchlist-projects"
+import { ProjectDetailPanel } from "@/components/project-detail-panel"
+import { Skeleton } from "@/components/ui/skeleton"
+import { MiningAgentV2Button } from "@/components/mining-agent-v2-button"
+import { useState, useEffect } from "react"
+import { Loader2 } from "lucide-react"
+import { ExportDropdown, ExportFormat } from "@/components/ui/export-dropdown"
+import { exportProjects } from "@/lib/export-utils"
+import { toast } from "sonner"
+import { Toaster } from "@/components/ui/toaster"
+import { supabase } from "@/lib/supabase/client"
+
+function getRiskBadgeColor(risk: RiskLevel) {
+  switch (risk) {
+    case "Low":
+      return "bg-green-100 text-green-800 hover:bg-green-100"
+    case "Medium":
+      return "bg-yellow-100 text-yellow-800 hover:bg-yellow-100"
+    case "High":
+      return "bg-orange-100 text-orange-800 hover:bg-orange-100"
+    case "Very High":
+      return "bg-red-100 text-red-800 hover:bg-red-100"
+  }
+}
+
+export function ProjectScreenerGlobal() {
+  const { projects: initialData, loading, error, refetch } = useProjects()
+  const [data, setData] = useState<MiningProject[]>(initialData)
+  const [sorting, setSorting] = useState<SortingState>([])
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
+  const [rowSelection, setRowSelection] = useState({})
+  const [globalFilter, setGlobalFilter] = useState("")
+
+  // Sync data with initialData when it changes
+  useEffect(() => {
+    setData(initialData)
+  }, [initialData])
+
+  // Project detail panel state
+  const [detailPanelOpen, setDetailPanelOpen] = useState(false)
+  const [selectedProjects, setSelectedProjects] = useState<MiningProject[]>([])
+  const [detailPanelMode, setDetailPanelMode] = useState<"single" | "comparison">("single")
+  const [miningAgentRunning, setMiningAgentRunning] = useState(false)
+  const [miningAgentProgress, setMiningAgentProgress] = useState<string>("")
+  const [updatingWatchlist, setUpdatingWatchlist] = useState<string | null>(null)
+
+  // Listen for refresh events
+  useEffect(() => {
+    const handleRefreshProjects = () => {
+      refetch()
+    }
+
+    window.addEventListener('refreshProjects', handleRefreshProjects)
+
+    return () => {
+      window.removeEventListener('refreshProjects', handleRefreshProjects)
+    }
+  }, [refetch])
+
+  const handleProjectClick = (projectId: string) => {
+    const project = data.find(p => String(p.id) === String(projectId))
+
+    if (project) {
+      setSelectedProjects([project])
+      setDetailPanelMode("single")
+      setDetailPanelOpen(true)
+    }
+  }
+
+  const handleMiningAgentProgress = (isRunning: boolean, message?: string) => {
+    setMiningAgentRunning(isRunning)
+    setMiningAgentProgress(message || "")
+  }
+
+  // Watchlist handler
+  const handleToggleWatchlist = async (project: MiningProject) => {
+    try {
+      setUpdatingWatchlist(project.id)
+      const newWatchlistStatus = !project.watchlist
+
+      // Optimistically update local state
+      const updatedData = data.map(p =>
+        p.id === project.id
+          ? { ...p, watchlist: newWatchlistStatus }
+          : p
+      )
+      setData(updatedData)
+
+      const { error } = await supabase
+        .from('projects')
+        .update({ watchlist: newWatchlistStatus })
+        .eq('id', project.id)
+
+      if (error) {
+        // Revert on error
+        const revertedData = data.map(p =>
+          p.id === project.id
+            ? { ...p, watchlist: !newWatchlistStatus }
+            : p
+        )
+        setData(revertedData)
+        throw error
+      }
+
+      toast.success(newWatchlistStatus ? 'Added to watchlist' : 'Removed from watchlist')
+    } catch (error: any) {
+      console.error('Error updating watchlist:', error)
+      toast.error(`Failed to update watchlist: ${error?.message || 'Unknown error'}`)
+    } finally {
+      setUpdatingWatchlist(null)
+    }
+  }
+
+  const handleExport = (format: ExportFormat) => {
+    const dataToExport = table.getFilteredRowModel().rows.map(row => row.original)
+    exportProjects(dataToExport, format, 'global-projects')
+    toast.success(`Exported ${dataToExport.length} projects as ${format.toUpperCase()}`)
+  }
+
+  const columns: ColumnDef<MiningProject>[] = [
+    {
+      id: "select",
+      header: ({ table }) => (
+        <Checkbox
+          checked={
+            table.getIsAllPageRowsSelected() ||
+            (table.getIsSomePageRowsSelected() && "indeterminate")
+          }
+          onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
+          aria-label="Select all"
+        />
+      ),
+      cell: ({ row }) => (
+        <Checkbox
+          checked={row.getIsSelected()}
+          onCheckedChange={(value) => row.toggleSelected(!!value)}
+          aria-label="Select row"
+        />
+      ),
+      enableSorting: false,
+      enableHiding: false,
+    },
+    {
+      id: "watchlist",
+      header: "",
+      cell: ({ row }) => {
+        const project = row.original
+        const isUpdating = updatingWatchlist === project.id
+
+        return (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation()
+              handleToggleWatchlist(project)
+            }}
+            disabled={isUpdating}
+            className="hover:bg-transparent"
+          >
+            {isUpdating ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : project.watchlist ? (
+              <BookmarkCheck className="h-4 w-4 fill-foreground" />
+            ) : (
+              <Bookmark className="h-4 w-4 text-muted-foreground hover:text-foreground" />
+            )}
+          </Button>
+        )
+      },
+      size: 50,
+    },
+    {
+      accessorKey: "name",
+      header: "Project",
+      cell: ({ row }) => (
+        <ContextMenuChat
+          data={row.original}
+          dataType="project"
+          context={row.original.name}
+        >
+          <div className="space-y-1">
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault()
+                handleProjectClick(row.original.id)
+              }}
+              className="text-sm font-semibold text-blue-600 hover:underline block"
+            >
+              {row.original.name}
+            </a>
+            <div className="text-xs text-gray-500">
+              {row.original.company || 'N/A'}
+            </div>
+          </div>
+        </ContextMenuChat>
+      ),
+    },
+    {
+      accessorKey: "stage",
+      header: ({ column }) => (
+        <Button
+          variant="ghost"
+          onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+        >
+          Stage
+          <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      ),
+      cell: ({ row }) => <div className="text-sm text-center">{row.original.stage || 'Unknown'}</div>,
+    },
+    {
+      accessorKey: "commodities",
+      header: "Commodities",
+      cell: ({ row }) => {
+        const commodities = row.original.commodities || []
+        return (
+          <div className="flex flex-wrap gap-1">
+            {commodities.slice(0, 2).map((commodity, i) => (
+              <Badge key={i} variant="outline" className="font-normal text-xs">
+                {commodity}
+              </Badge>
+            ))}
+            {commodities.length > 2 && (
+              <Badge variant="outline" className="font-normal text-xs">
+                +{commodities.length - 2}
+              </Badge>
+            )}
+          </div>
+        )
+      },
+    },
+    {
+      accessorKey: "location",
+      header: "Location",
+      cell: ({ row }) => (
+        <div className="space-y-1">
+          <div className="text-sm font-semibold">{row.original.location || 'Unknown'}</div>
+          <div className="flex items-center gap-2">
+            <Badge className={cn("text-xs", getRiskBadgeColor(row.original.riskLevel || 'Medium'))}>
+              {row.original.riskLevel || 'Medium'} Risk
+            </Badge>
+          </div>
+        </div>
+      ),
+    },
+    {
+      accessorKey: "resource_estimate",
+      header: "Resource Estimate",
+      cell: ({ row }) => (
+        <div className="text-sm max-w-[200px] truncate" title={row.original.resource_estimate || 'N/A'}>
+          {row.original.resource_estimate || 'N/A'}
+        </div>
+      ),
+    },
+    {
+      accessorKey: "reserve_estimate",
+      header: "Reserve Estimate",
+      cell: ({ row }) => (
+        <div className="text-sm max-w-[200px] truncate" title={row.original.reserve_estimate || 'N/A'}>
+          {row.original.reserve_estimate || 'N/A'}
+        </div>
+      ),
+    },
+    {
+      accessorKey: "ownership_percentage",
+      header: ({ column }) => (
+        <Button
+          variant="ghost"
+          onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+        >
+          Ownership %
+          <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      ),
+      cell: ({ row }) => {
+        const pct = row.original.ownership_percentage
+        return (
+          <div className="text-sm text-center">
+            {pct !== null && pct !== undefined ? `${pct}%` : 'N/A'}
+          </div>
+        )
+      },
+    },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }) => {
+        const status = row.original.status
+        const statusColors = {
+          "Active": "bg-green-100 text-green-800",
+          "On Hold": "bg-yellow-100 text-yellow-800",
+          "Closed": "bg-gray-100 text-gray-800",
+        }
+
+        return (
+          <Badge className={cn("w-fit", statusColors[status as keyof typeof statusColors] || "bg-gray-100 text-gray-800")}>
+            {status || 'Unknown'}
+          </Badge>
+        )
+      },
+    },
+  ]
+
+  const table = useReactTable({
+    data,
+    columns,
+    onSortingChange: setSorting,
+    onColumnFiltersChange: setColumnFilters,
+    getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    onColumnVisibilityChange: setColumnVisibility,
+    onRowSelectionChange: setRowSelection,
+    onGlobalFilterChange: setGlobalFilter,
+    globalFilterFn: "includesString",
+    state: {
+      sorting,
+      columnFilters,
+      columnVisibility,
+      rowSelection,
+      globalFilter,
+    },
+  })
+
+  const selectedRowsCount = Object.keys(rowSelection).length
+
+  if (loading) {
+    return (
+      <div className="w-full space-y-4">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-96 w-full" />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="w-full p-8 text-center">
+        <p className="text-muted-foreground">Failed to load projects: {error}</p>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <div className="w-full space-y-4 relative">
+        <div className="flex items-center justify-between">
+          <h2 className="text-2xl font-semibold tracking-tight">Global Projects — {data.length} projects</h2>
+          <div className="flex items-center gap-2">
+            <MiningAgentV2Button
+              onComplete={refetch}
+              onProgressChange={handleMiningAgentProgress}
+            />
+            <ExportDropdown onExport={handleExport} />
+            <Button variant="outline" size="sm">
+              <Eye className="mr-2 h-4 w-4" />
+              View Data in Public Company Search
+            </Button>
+            <Button size="sm">
+              <Plus className="mr-2 h-4 w-4" />
+              Add Project
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between py-2">
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search all columns..."
+                value={globalFilter ?? ""}
+                onChange={(event) => setGlobalFilter(event.target.value)}
+                className="pl-8 w-[300px]"
+              />
+            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  Columns <ChevronDown className="ml-2 h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-[200px]">
+                <DropdownMenuLabel>Toggle columns</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                {table
+                  .getAllColumns()
+                  .filter((column) => column.getCanHide())
+                  .map((column) => {
+                    return (
+                      <DropdownMenuCheckboxItem
+                        key={column.id}
+                        className="capitalize"
+                        checked={column.getIsVisible()}
+                        onCheckedChange={(value) => column.toggleVisibility(!!value)}
+                      >
+                        {column.id}
+                      </DropdownMenuCheckboxItem>
+                    )
+                  })}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          <div className="text-sm text-muted-foreground">
+            {selectedRowsCount} of {table.getFilteredRowModel().rows.length} row(s) selected.
+          </div>
+        </div>
+
+        <div className="rounded-lg border relative overflow-hidden">
+          {miningAgentRunning && (
+            <div className="absolute inset-0 bg-background/80 backdrop-blur-sm z-10 flex items-center justify-center">
+              <div className="flex flex-col items-center gap-4">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                <div className="text-sm text-muted-foreground font-medium">
+                  {miningAgentProgress || "Running mining agent..."}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <Table>
+            <TableHeader>
+              {table.getHeaderGroups().map((headerGroup) => (
+                <TableRow key={headerGroup.id}>
+                  {headerGroup.headers.map((header) => {
+                    return (
+                      <TableHead key={header.id}>
+                        {header.isPlaceholder
+                          ? null
+                          : flexRender(header.column.columnDef.header, header.getContext())}
+                      </TableHead>
+                    )
+                  })}
+                </TableRow>
+              ))}
+            </TableHeader>
+            <TableBody>
+              {table.getRowModel().rows?.length ? (
+                table.getRowModel().rows.map((row) => (
+                  <TableRow
+                    key={row.id}
+                    data-state={row.getIsSelected() && "selected"}
+                  >
+                    {row.getVisibleCells().map((cell) => (
+                      <TableCell key={cell.id}>
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow>
+                  <TableCell colSpan={columns.length} className="h-24 text-center">
+                    No results.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+
+        <div className="flex items-center justify-end space-x-2 py-4">
+          <div className="flex-1 text-sm text-muted-foreground">
+            Showing {table.getState().pagination.pageIndex * table.getState().pagination.pageSize + 1} to{" "}
+            {Math.min(
+              (table.getState().pagination.pageIndex + 1) * table.getState().pagination.pageSize,
+              table.getFilteredRowModel().rows.length
+            )}{" "}
+            of {table.getFilteredRowModel().rows.length} results
+          </div>
+          <div className="space-x-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => table.previousPage()}
+              disabled={!table.getCanPreviousPage()}
+            >
+              Previous
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => table.nextPage()}
+              disabled={!table.getCanNextPage()}
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <ProjectDetailPanel
+        isOpen={detailPanelOpen}
+        onClose={() => setDetailPanelOpen(false)}
+        projects={selectedProjects}
+        mode={detailPanelMode}
+        onProjectSelect={(projectId) => {
+          const project = data.find(p => String(p.id) === String(projectId))
+          if (project) {
+            setSelectedProjects([project])
+            setDetailPanelMode("single")
+          }
+        }}
+      />
+      <Toaster />
+    </>
+  )
+}
