@@ -1,73 +1,71 @@
-# Apache Mahout Integration Guide
+# Apache Mahout Integration Guide (H&M and RetailRocket)
 
-This project supports using **Apache Mahout** as the baseline collaborative filtering model. The resulting vectors can be imported to replace the default `implicit` ALS implementation.
-
-## Overview
-
-1. **Export** interaction data from this project to CSV.
-2. **Train** using Apache Mahout (externally).
-3. **Import** the resulting vectors back into this project.
-4. **Fine-tune** (Optional): Use these vectors to initialize the Neural Two-Tower model.
+This project supports using **Apache Mahout** as the baseline collaborative filtering model for both H&M and RetailRocket.
 
 ## Step 1: Export Data
 
-Run the export script to generate the CSV file Mahout needs:
+Run the export script for each dataset:
 
 ```bash
-python -m recsys.src.mahout.mahout_interface
+# Export H&M
+python -m recsys.src.mahout.mahout_interface --dataset hm --action export
+
+# Export RetailRocket
+python -m recsys.src.mahout.mahout_interface --dataset rr --action export
 ```
 
-This will create:
-- `recsys/data/mahout/interactions.csv` (Format: `userID,itemID,preference`)
+This creates `recsys/data/mahout/interactions_hm.csv` and `interactions_rr.csv`.
 
-## Step 2: Run Apache Mahout
+## Step 2: Run Apache Mahout (Google Colab Recommended)
 
-Assuming you have Apache Mahout (and Spark/Hadoop) installed, run the ALS factorization.
+Mahout requires Java and Spark. It is easiest to run this on **Google Colab**.
 
-*Example (using Mahout Spark Shell or CLI):*
-
-```bash
-# This is a conceptual command; adapt to your Mahout version (0.13+)
-mahout spark-itemsimilarity \
-    --input interactions.csv \
-    --output output_dir \
-    --master local[4]
-```
-
-Or if using the **ALSWR** (Alternating Least Squares with Weighted Regularization) algorithm:
+1. Upload your `interactions_*.csv` to Colab.
+2. Install Mahout/Spark in Colab.
+3. Run the ALS factorization:
 
 ```bash
+# Example for H&M
 mahout parallelALS \
-    --input interactions.csv \
-    --output output_als \
+    --input interactions_hm.csv \
+    --output output_hm \
     --numFeatures 64 \
     --lambda 0.05 \
     --numIterations 15
 ```
 
-## Step 3: Format Output
+4. Download the resulting `user_factors.csv` and `item_factors.csv` from the output directory.
 
-You need to convert Mahout's output (often SequenceFiles) to simple CSV files:
-- `user_factors.csv`: `userID, feature1, feature2, ...`
-- `item_factors.csv`: `itemID, feature1, feature2, ...`
+## Step 3: Import Results
 
-Place these files in `recsys/data/mahout/`.
+Place the downloaded CSVs in `recsys/data/mahout/` and run:
 
-## Step 4: Import Results
+```bash
+# Import H&M
+python -m recsys.src.mahout.mahout_interface --dataset hm --action import --user_vecs recsys/data/mahout/user_factors_hm.csv --item_vecs recsys/data/mahout/item_factors_hm.csv
 
-Edit `recsys/src/mahout/mahout_interface.py` to uncomment the import lines, or run:
-
-```python
-from recsys.src.mahout.mahout_interface import import_mahout_results
-from pathlib import Path
-
-DATA = Path("recsys/data/mahout")
-import_mahout_results(
-    DATA / "user_factors.csv",
-    DATA / "item_factors.csv"
-)
+# Import RetailRocket
+python -m recsys.src.mahout.mahout_interface --dataset rr --action import --user_vecs recsys/data/mahout/user_factors_rr.csv --item_vecs recsys/data/mahout/item_factors_rr.csv
 ```
 
-## Result
+## Step 4: Fine-tune with Neural Two-Tower
 
-The file `recsys/artifacts/hm_collab_model.joblib` will be updated with your Mahout vectors. The existing Hybrid Ranker will automatically use these new vectors for scoring.
+Now use the Mahout vectors as the baseline for your PyTorch model.
+
+### 1. Train the H&M Base Model
+This model learns from fashion-specific interactions.
+```bash
+python -m recsys.src.models.train_mahout_finetune --dataset hm --epochs 5
+```
+
+### 2. Fine-tune using RetailRocket
+Load the H&M weights and refine them on the RetailRocket interaction patterns.
+```bash
+python -m recsys.src.models.train_mahout_finetune --dataset rr --epochs 3 --load_model recsys/artifacts/mahout_finetuned_hm.pt
+```
+
+## Summary for Presentation
+
+- **Baseline**: Apache Mahout (Collaborative Filtering). It learns latent preferences from raw interaction matrices.
+- **Fine-tuning**: Neural Two-Tower Model. It takes the linear Mahout vectors as input and applies non-linear transformations (Deep Learning) to capture more complex user-item relationships.
+- **Transfer Learning**: We initialize the RetailRocket model with H&M weights. This "transfers" the knowledge learned from the feature-rich H&M dataset (which has images/text) to the RetailRocket domain.

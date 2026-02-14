@@ -27,6 +27,7 @@ print("[hybrid_v2] Loading content user vectors...")
 user_vecs = joblib.load(ART / "user_vectors_hm.joblib")
 
 print("[hybrid_v2] Loading collaborative filtering model...")
+# This will be either the implicit one OR the Mahout one if imported
 hm_collab = joblib.load(ART / "hm_collab_model.joblib")
 cf_item_factors = hm_collab["user_factors"].astype("float32")   # ALS items
 cf_user_factors = hm_collab["item_factors"].astype("float32")   # ALS users
@@ -36,62 +37,102 @@ cf_item_map = hm_collab["item_map"]                             # idx -> item_id
 cf_user_id_to_idx = {uid: i for i, uid in cf_user_map.items()}
 cf_item_id_to_idx = {iid: i for i, iid in cf_item_map.items()}
 
-print("[hybrid_v2] Loading Two-Tower v2 ID maps...")
-idmaps = joblib.load(ART / "two_tower_v2_idmaps.joblib")
-user_id_to_idx = idmaps["user_id_to_idx"]
-item_id_to_idx = idmaps["item_id_to_idx"]
-idx_to_user_id = idmaps["idx_to_user_id"]
-idx_to_item_id = idmaps["idx_to_item_id"]
-
-print("[hybrid_v2] Loading Two-Tower v2 item_features...")
-item_features = joblib.load(ART / "two_tower_v2_item_features.joblib").astype("float32")
-item_dim = item_features.shape[1]
-
-print("[hybrid_v2] Loading Two-Tower v2 model...")
-
 # =====================================================
-# Two-Tower v2 Model (must match training architecture)
+# Two-Tower Model Selection (Mahout Finetuned vs Legacy)
 # =====================================================
-class TwoTowerHMV2(nn.Module):
-    def __init__(self, n_users, item_dim=384, embed_dim=128):
-        super().__init__()
-        self.user_tower = nn.Sequential(
-            nn.Embedding(n_users, 256),
-            nn.ReLU(),
-            nn.Linear(256, embed_dim),
-            nn.ReLU(),
-        )
-
-        self.item_tower = nn.Sequential(
-            nn.Linear(item_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, embed_dim),
-            nn.ReLU(),
-        )
-
-        self.scorer = nn.Sequential(
-            nn.Linear(embed_dim, 32),
-            nn.ReLU(),
-            nn.Linear(32, 1),
-        )
-
-    def forward(self, user_idx, item_vec):
-        u = self.user_tower[0](user_idx)
-        u = self.user_tower[1:](u)
-        i = self.item_tower(item_vec)
-        x = torch.abs(u - i)
-        return torch.sigmoid(self.scorer(x).squeeze(1))
+mahout_model_path = ART / "mahout_finetuned_model.pt"
+use_mahout_tt = mahout_model_path.exists()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-two_tower = TwoTowerHMV2(n_users=len(user_id_to_idx),
-                         item_dim=item_dim,
-                         embed_dim=128).to(device)
+two_tower = None
+user_vecs_mahout = {}
 
-state = torch.load(ART / "two_tower_hm_v2_final.pt", map_location=device)
-two_tower.load_state_dict(state)
-two_tower.eval()
+if use_mahout_tt:
+    print("[hybrid_v2] Found Mahout Finetuned Model! Loading...")
+    
+    # Load Mahout vectors
+    user_vecs_mahout = joblib.load(ART / "user_vectors_mahout.joblib")
+    
+    # Infer dimensions
+    sample_uid = next(iter(user_vecs_mahout))
+    user_dim = len(user_vecs_mahout[sample_uid])
+    item_dim = item_X.shape[1]
+    
+    class MahoutTwoTower(nn.Module):
+        def __init__(self, user_dim, item_dim):
+            super().__init__()
+            self.user_tower = nn.Sequential(
+                nn.Linear(user_dim, 128),
+                nn.ReLU(),
+                nn.Linear(128, 64),
+            )
+            self.item_tower = nn.Sequential(
+                nn.Linear(item_dim, 128),
+                nn.ReLU(),
+                nn.Linear(128, 64),
+            )
+            self.output = nn.Linear(64, 1)
 
-print("[hybrid_v2] Two-Tower v2 loaded on", device)
+        def forward(self, u_vec, i_vec):
+            u = self.user_tower(u_vec)
+            i = self.item_tower(i_vec)
+            x = torch.abs(u - i)
+            return torch.sigmoid(self.output(x).squeeze(1))
+
+    two_tower = MahoutTwoTower(user_dim, item_dim).to(device)
+    two_tower.load_state_dict(torch.load(mahout_model_path, map_location=device))
+    two_tower.eval()
+    print("[hybrid_v2] Mahout Finetuned Model loaded.")
+
+else:
+    print("[hybrid_v2] Loading Legacy Two-Tower v2 model (ID-based)...")
+    
+    print("[hybrid_v2] Loading Two-Tower v2 ID maps...")
+    idmaps = joblib.load(ART / "two_tower_v2_idmaps.joblib")
+    user_id_to_idx = idmaps["user_id_to_idx"]
+    item_id_to_idx = idmaps["item_id_to_idx"]
+    
+    print("[hybrid_v2] Loading Two-Tower v2 item_features...")
+    item_features = joblib.load(ART / "two_tower_v2_item_features.joblib").astype("float32")
+    item_dim = item_features.shape[1]
+
+    class TwoTowerHMV2(nn.Module):
+        def __init__(self, n_users, item_dim=384, embed_dim=128):
+            super().__init__()
+            self.user_tower = nn.Sequential(
+                nn.Embedding(n_users, 256),
+                nn.ReLU(),
+                nn.Linear(256, embed_dim),
+                nn.ReLU(),
+            )
+            self.item_tower = nn.Sequential(
+                nn.Linear(item_dim, 256),
+                nn.ReLU(),
+                nn.Linear(256, embed_dim),
+                nn.ReLU(),
+            )
+            self.scorer = nn.Sequential(
+                nn.Linear(embed_dim, 32),
+                nn.ReLU(),
+                nn.Linear(32, 1),
+            )
+
+        def forward(self, user_idx, item_vec):
+            u = self.user_tower[0](user_idx)
+            u = self.user_tower[1:](u)
+            i = self.item_tower(item_vec)
+            x = torch.abs(u - i)
+            return torch.sigmoid(self.scorer(x).squeeze(1))
+
+    two_tower = TwoTowerHMV2(n_users=len(user_id_to_idx),
+                             item_dim=item_dim,
+                             embed_dim=128).to(device)
+    
+    state = torch.load(ART / "two_tower_hm_v2_final.pt", map_location=device)
+    two_tower.load_state_dict(state)
+    two_tower.eval()
+    print("[hybrid_v2] Legacy Two-Tower v2 loaded.")
+
 
 # =====================================================
 # Scoring Functions (Content, CF, Two-Tower)
@@ -110,6 +151,7 @@ def score_content(user_id, item_id):
 
 def score_cf(user_id, item_id):
     """Collaborative filtering ALS score"""
+    # Uses whatever is in hm_collab_model (Implicit or Mahout)
     if user_id not in cf_user_id_to_idx:
         return None
     u_idx = cf_user_id_to_idx[user_id]
@@ -122,20 +164,39 @@ def score_cf(user_id, item_id):
 
 
 def score_two_tower(user_id, item_id):
-    """Two-Tower v2 score: user_tower(user) vs item_tower(clip_vec)"""
-    if user_id not in user_id_to_idx:
-        return None
-    if item_id not in item_id_to_idx:
+    """Two-Tower score"""
+    if two_tower is None:
         return None
 
-    u_idx = user_id_to_idx[user_id]
-    i_idx = item_id_to_idx[item_id]
+    if use_mahout_tt:
+        # Mahout Finetuned Version (Vector based)
+        if user_id not in user_vecs_mahout:
+            return None
+        if item_id not in row_map:
+            return None
+        
+        u_vec = torch.tensor(user_vecs_mahout[user_id], dtype=torch.float32, device=device).unsqueeze(0)
+        # item_X holds CLIP embeddings
+        i_vec = torch.tensor(item_X[row_map[item_id]], dtype=torch.float32, device=device).unsqueeze(0)
+        
+        with torch.no_grad():
+            return float(two_tower(u_vec, i_vec).cpu().numpy()[0])
+            
+    else:
+        # Legacy ID based Version
+        if user_id not in user_id_to_idx:
+            return None
+        if item_id not in item_id_to_idx:
+            return None
 
-    i_vec = torch.tensor(item_features[i_idx], dtype=torch.float32, device=device)
-    u_tensor = torch.tensor([u_idx], dtype=torch.long, device=device)
+        u_idx = user_id_to_idx[user_id]
+        i_idx = item_id_to_idx[item_id]
 
-    with torch.no_grad():
-        return float(two_tower(u_tensor, i_vec.unsqueeze(0)).cpu().numpy()[0])
+        i_vec = torch.tensor(item_features[i_idx], dtype=torch.float32, device=device)
+        u_tensor = torch.tensor([u_idx], dtype=torch.long, device=device)
+
+        with torch.no_grad():
+            return float(two_tower(u_tensor, i_vec.unsqueeze(0)).cpu().numpy()[0])
 
 # =====================================================
 # Hybrid score (weighted combination)

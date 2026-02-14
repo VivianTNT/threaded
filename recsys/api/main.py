@@ -10,6 +10,10 @@ import torch
 from transformers import CLIPProcessor, CLIPModel
 import faiss
 
+# Import Hybrid Ranker (loads Mahout, Two-Tower, etc.)
+# This might take a few seconds to load models at startup
+from recsys.src.models.hybrid_ranker import score_hybrid
+
 # Paths
 BASE = Path("recsys")
 DATA = BASE / "data"
@@ -27,7 +31,7 @@ app.add_middleware(
 )
 
 ############################################
-# Load embeddings + FAISS
+# Load embeddings + FAISS (for retrieval)
 ############################################
 
 print("[api] Loading H&M FAISS index...")
@@ -37,7 +41,6 @@ item_ids = faiss_pack["item_ids"]
 item_X = faiss_pack["X"]
 
 row_map = faiss_pack["row_map"]  # item_id → row index
-
 
 print("[api] Loading user_vectors_hm...")
 user_vectors = joblib.load(ART / "user_vectors_hm.joblib")
@@ -67,7 +70,7 @@ def embed_image_file(file: UploadFile) -> np.ndarray:
 
 
 ############################################
-# Utility: run FAISS search
+# Utility: run FAISS search (Retrieval)
 ############################################
 def faiss_search(vec: np.ndarray, k: int = 20):
     vec = vec.reshape(1, -1)
@@ -98,7 +101,7 @@ async def embed_image(file: UploadFile = File(...)):
 
 
 ############################################
-# 2. Recommend from image(s)
+# 2. Recommend from image(s) (Cold Start)
 ############################################
 class RecommendFromImagesRequest(BaseModel):
     images: list[str] = []  # base64 if frontend wants this (optional)
@@ -112,16 +115,36 @@ async def recommend_from_image(file: UploadFile = File(...), top_k: int = 20):
 
 
 ############################################
-# 3. Recommend for user_id
+# 3. Recommend for user_id (Hybrid Ranking)
 ############################################
 @app.get("/recommend/user/{user_id}")
 def recommend_user(user_id: int, top_k: int = 20):
+    """
+    Retrieves candidates via FAISS (Content) then ranks via Hybrid (Mahout + TwoTower).
+    """
     if user_id not in user_vectors:
         return {"recommendations": []}
 
+    # 1. Retrieval (Get top 100 candidates from Content Filtering)
     vec = user_vectors[user_id].astype("float32")
-    results = faiss_search(vec, k=top_k)
-    return {"recommendations": results}
+    candidates = faiss_search(vec, k=100)
+    
+    # 2. Re-Ranking (Apply Mahout + TwoTower scores)
+    ranked_results = []
+    for res in candidates:
+        item_id = res["item_id"]
+        # Calculate hybrid score
+        # Note: hybrid_score might return None if models miss coverage
+        # In that case, fall back to the initial content score
+        h_score = score_hybrid(user_id, item_id, w_content=0.4, w_cf=0.4, w_tt=0.2)
+        
+        final_score = h_score if h_score is not None else res["score"]
+        ranked_results.append({"item_id": item_id, "score": float(final_score)})
+    
+    # Sort by hybrid score
+    ranked_results.sort(key=lambda x: x["score"], reverse=True)
+    
+    return {"recommendations": ranked_results[:top_k]}
 
 
 ############################################
