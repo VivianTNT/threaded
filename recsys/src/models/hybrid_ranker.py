@@ -255,11 +255,30 @@ def score_hybrid(user_id, item_id, w_content=0.4, w_cf=0.4, w_tt=0.2):
 # =====================================================
 
 if __name__ == "__main__":
-    # Simple test
-    print("\n[Test] Scoring HM user 123 against HM item...")
-    hm_item = 2010877501  # example HM item
-    print(f"HM->HM: {score_hybrid(123, hm_item)}")
+    print("\n[Test] Using real IDs from loaded artifacts...")
     
-    print("\n[Test] Scoring HM user 123 against RR item...")
-    rr_item = 10001  # example RR item
-    print(f"HM->RR: {score_hybrid(123, rr_item)}")
+    # Get real HM user and item
+    hm_users = list(artifacts["hm"].get("user_vecs", {}).keys())
+    hm_items = list(artifacts["hm"].get("row_map", {}).keys())
+    
+    if hm_users and hm_items:
+        test_hm_user = hm_users[0]
+        test_hm_item = hm_items[0]
+        print(f"\n[Test] HM user {test_hm_user} → HM item {test_hm_item}")
+        score = score_hybrid(test_hm_user, test_hm_item)
+        print(f"  Hybrid score: {score}")
+        print(f"  - Content: {score_content(test_hm_user, test_hm_item)}")
+        print(f"  - ALS: {score_cf(test_hm_user, test_hm_item)}")
+        print(f"  - Two-Tower: {score_two_tower(test_hm_user, test_hm_item)}")
+    
+    # Get real RR item
+    rr_items = list(artifacts["rr"].get("row_map", {}).keys())
+    
+    if hm_users and rr_items:
+        test_rr_item = rr_items[0]
+        print(f"\n[Test] HM user {test_hm_user} → RR item {test_rr_item} (cross-domain)")
+        score = score_hybrid(test_hm_user, test_rr_item)
+        print(f"  Hybrid score: {score}")
+        print(f"  - Content: {score_content(test_hm_user, test_rr_item)}")
+        print(f"  - ALS: {score_cf(test_hm_user, test_rr_item)}")
+        print(f"  - Two-Tower: {score_two_tower(test_hm_user, test_rr_item)}")
