@@ -24,14 +24,7 @@ playwright/.cache/
 .user-data-dir/
 
 # ---- Data & Outputs ----
-data/raw_html/
-data/clean/
-data/emb/
-data/tmp/
-data/*.parquet
-data/*.csv
-data/*.jsonl
-!data/.gitkeep           # keep empty folders tracked if needed
+web_scraping/data/*
 
 # ---- Logs & Reports ----
 *.log

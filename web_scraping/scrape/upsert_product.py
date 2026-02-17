@@ -33,8 +33,6 @@ def upsert_product(product: Dict[str, Any]):
         "brand_name": product.get("brand_name"),
         "category": product.get("category"),
         "description": product.get("description"),
-
-        "brand_id": None,   # Override default for now so no random UUID
     }
 
     # Log exactly what we're about to send
