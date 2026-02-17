@@ -10,7 +10,7 @@ from transformers import CLIPProcessor, CLIPModel
 
 DATA = Path("recsys/data")
 ART = Path("recsys/artifacts")
-IMG_DIR = DATA / "images"
+IMG_DIR = DATA / "hm_images"
 
 # Load the original H&M articles.csv
 articles_path = DATA / "hm_raw" / "articles.csv"
@@ -59,7 +59,8 @@ batch_images, batch_ids = [], []
 
 for _, row in tqdm(articles.iterrows(), total=len(articles)):
     article_id = str(row["article_id"]).zfill(10)
-    if int(article_id) in processed_ids:
+    item_id = int("2" + article_id)
+    if item_id in processed_ids:
         continue  # skip already processed
 
     img_path = IMG_DIR / article_id[:3] / f"{article_id}.jpg"
@@ -67,7 +68,8 @@ for _, row in tqdm(articles.iterrows(), total=len(articles)):
         try:
             image = Image.open(img_path).convert("RGB")
             batch_images.append(image)
-            batch_ids.append(int(article_id))
+            # Use item_id format (int("2"+article_id)) to match items.parquet for build_faiss
+            batch_ids.append(int("2" + article_id))
         except Exception:
             continue
 

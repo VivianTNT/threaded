@@ -13,8 +13,7 @@ ART = Path("recsys/artifacts")
 # ---- Load Artifacts ----
 print("[user_modeling] loading data ...")
 events = pd.read_parquet(DATA / "events_hm.parquet")
-events = events[events["item_id"] < 3000000]
-events = events[events["user_id"] < 3000000]
+# events_hm is H&M-only; no ID filter needed
 
 faiss_pack = joblib.load(ART / "faiss_items_hm.joblib")
 X = faiss_pack["X"]            # item embedding matrix (N_items, dim)

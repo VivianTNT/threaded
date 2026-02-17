@@ -14,9 +14,8 @@ OUT.mkdir(parents=True, exist_ok=True)
 print("[HM] Loading events.parquet...")
 events = pd.read_parquet(DATA / "events_hm.parquet")
 
-# H&M IDs are small: < 3,000,000
-hm = events[(events["user_id"] < 3_000_000) & (events["item_id"] < 3_000_000)].copy()
-hm = hm[["user_id", "item_id"]].drop_duplicates()
+# events_hm.parquet is already H&M-only (source=="HM"); no ID filter needed
+hm = events[["user_id", "item_id"]].drop_duplicates()
 
 print(f"[HM] H&M interactions: {len(hm):,}")
 

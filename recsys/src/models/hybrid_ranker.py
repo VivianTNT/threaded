@@ -40,7 +40,10 @@ cf_item_id_to_idx = {iid: i for i, iid in cf_item_map.items()}
 # =====================================================
 # Two-Tower Model Selection (Mahout Finetuned vs Legacy)
 # =====================================================
-mahout_model_path = ART / "mahout_finetuned_model.pt"
+# Prefer hm-specific artifacts (from train_mahout_finetune + import_factors)
+mahout_model_path = ART / "mahout_finetuned_hm.pt"
+if not mahout_model_path.exists():
+    mahout_model_path = ART / "mahout_finetuned_model.pt"  # legacy name
 use_mahout_tt = mahout_model_path.exists()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -50,8 +53,11 @@ user_vecs_mahout = {}
 if use_mahout_tt:
     print("[hybrid_v2] Found Mahout Finetuned Model! Loading...")
     
-    # Load Mahout vectors
-    user_vecs_mahout = joblib.load(ART / "user_vectors_mahout.joblib")
+    # Load Mahout vectors (prefer hm-specific, fallback to legacy)
+    mahout_user_path = ART / "user_vectors_mahout_hm.joblib"
+    if not mahout_user_path.exists():
+        mahout_user_path = ART / "user_vectors_mahout.joblib"
+    user_vecs_mahout = joblib.load(mahout_user_path)
     
     # Infer dimensions
     sample_uid = next(iter(user_vecs_mahout))
@@ -204,20 +210,28 @@ def score_two_tower(user_id, item_id):
 
 def score_hybrid(user_id, item_id,
                  w_content=0.4, w_cf=0.4, w_tt=0.2):
-
+    """Weighted sum of content + collab + Two-Tower. Handles missing scores gracefully."""
     s1 = score_content(user_id, item_id)
     s2 = score_cf(user_id, item_id)
     s3 = score_two_tower(user_id, item_id)
 
-    if s1 is None or s2 is None or s3 is None:
+    parts, weights = [], []
+    if s1 is not None:
+        parts.append(s1)
+        weights.append(w_content)
+    if s2 is not None:
+        parts.append(s2)
+        weights.append(w_cf)
+    if s3 is not None:
+        parts.append(2 * (s3 - 0.5))  # map sigmoid [0,1] -> [-1,1]
+        weights.append(w_tt)
+
+    if not parts:
         return None
 
-    # Normalize:
-    s1 = s1
-    s2 = s2
-    s3 = 2 * (s3 - 0.5)  # map sigmoid [0,1] -> [-1,1]
-
-    return w_content * s1 + w_cf * s2 + w_tt * s3
+    # Renormalize weights when some scores are missing
+    w_sum = sum(weights)
+    return sum(p * w for p, w in zip(parts, weights)) / w_sum
 
 # =====================================================
 # Evaluation: Recall@K, NDCG@K

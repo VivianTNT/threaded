@@ -7,10 +7,16 @@ recsys/images/*
 __pycache__/
 *.pyc
 
-# Model checkpoints
+# Model checkpoints and artifacts (do not commit)
 *.pt
 *.joblib
 *.npy
+*.parquet
+
+# Large dataset directories
+recsys/data/hm_raw/
+recsys/data/rr_raw/
+recsys/data/hm_images/
 
 # Logs
 *.log

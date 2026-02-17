@@ -2,7 +2,7 @@ import pandas as pd
 from pathlib import Path
 from recsys.src.hm_loader import load_hm_items, load_hm_events   # ← import new helper
 
-RAW = Path("recsys/data/raw")
+RAW = Path("recsys/data/rr_raw")
 OUT = Path("recsys/data")
 OUT.mkdir(parents=True, exist_ok=True)
 

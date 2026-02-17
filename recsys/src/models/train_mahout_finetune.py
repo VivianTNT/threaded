@@ -79,7 +79,7 @@ def train_mahout_finetune(dataset="hm", epochs=3, batch_size=512, lr=1e-3, load_
         mahout_user_path = ART / "user_vectors_mahout.joblib"
 
     if not mahout_user_path.exists():
-        raise FileNotFoundError(f"Could not find {mahout_user_path}. Run mahout_interface.py --action import first.")
+        raise FileNotFoundError(f"Could not find {mahout_user_path}. Run import_factors first (see recsys/src/mahout/runbook.md).")
         
     user_vecs = joblib.load(mahout_user_path)
     

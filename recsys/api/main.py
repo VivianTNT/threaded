@@ -8,11 +8,6 @@ import io
 from pathlib import Path
 import torch
 from transformers import CLIPProcessor, CLIPModel
-import faiss
-
-# Import Hybrid Ranker (loads Mahout, Two-Tower, etc.)
-# This might take a few seconds to load models at startup
-from recsys.src.models.hybrid_ranker import score_hybrid
 
 # Paths
 BASE = Path("recsys")
@@ -39,11 +34,18 @@ faiss_pack = joblib.load(ART / "faiss_items_hm.joblib")
 faiss_index = faiss_pack["index"]
 item_ids = faiss_pack["item_ids"]
 item_X = faiss_pack["X"]
-
-row_map = faiss_pack["row_map"]  # item_id → row index
+row_map = faiss_pack["row_map"]
 
 print("[api] Loading user_vectors_hm...")
 user_vectors = joblib.load(ART / "user_vectors_hm.joblib")
+
+# Optional: Hybrid ranker (Mahout + Two-Tower). Falls back to content if missing.
+score_hybrid = None
+try:
+    from recsys.src.models.hybrid_ranker import score_hybrid
+    print("[api] Hybrid ranker loaded.")
+except Exception as e:
+    print(f"[api] Hybrid ranker not available ({e}). Using content/collab only.")
 
 ############################################
 # Load CLIP for image embedding
@@ -73,7 +75,7 @@ def embed_image_file(file: UploadFile) -> np.ndarray:
 # Utility: run FAISS search (Retrieval)
 ############################################
 def faiss_search(vec: np.ndarray, k: int = 20):
-    vec = vec.reshape(1, -1)
+    vec = vec.reshape(1, -1).astype("float32")
     scores, indices = faiss_index.search(vec, k)
     results = []
     for score, idx in zip(scores[0], indices[0]):
@@ -115,36 +117,39 @@ async def recommend_from_image(file: UploadFile = File(...), top_k: int = 20):
 
 
 ############################################
-# 3. Recommend for user_id (Hybrid Ranking)
+# 3. Recommend for user_id
 ############################################
 @app.get("/recommend/user/{user_id}")
-def recommend_user(user_id: int, top_k: int = 20):
+def recommend_user(user_id: int, top_k: int = 20, strategy: str = "content"):
     """
-    Retrieves candidates via FAISS (Content) then ranks via Hybrid (Mahout + TwoTower).
+    Recommend items for a user.
+    strategy: "content" (FAISS), "collab" (ALS), or "hybrid" (content+CF+TwoTower).
+    Default: content. If collab requested but ALS not available, falls back to content.
     """
+    if strategy in ("content", "collab"):
+        from recsys.src.recommend_engine import recommend_for_user
+        results = recommend_for_user(user_id, top_k=top_k, strategy=strategy)
+        return {"recommendations": results}
+
+    # Hybrid path (when score_hybrid is available and strategy=hybrid)
+    if strategy == "hybrid" and score_hybrid is not None and user_id in user_vectors:
+        vec = user_vectors[user_id].astype("float32")
+        candidates = faiss_search(vec, k=100)
+        ranked_results = []
+        for res in candidates:
+            item_id = res["item_id"]
+            h_score = score_hybrid(user_id, item_id, w_content=0.4, w_cf=0.4, w_tt=0.2)
+            final_score = h_score if h_score is not None else res["score"]
+            ranked_results.append({"item_id": item_id, "score": float(final_score)})
+        ranked_results.sort(key=lambda x: x["score"], reverse=True)
+        return {"recommendations": ranked_results[:top_k]}
+
+    # Fallback: content-only
     if user_id not in user_vectors:
         return {"recommendations": []}
-
-    # 1. Retrieval (Get top 100 candidates from Content Filtering)
     vec = user_vectors[user_id].astype("float32")
-    candidates = faiss_search(vec, k=100)
-    
-    # 2. Re-Ranking (Apply Mahout + TwoTower scores)
-    ranked_results = []
-    for res in candidates:
-        item_id = res["item_id"]
-        # Calculate hybrid score
-        # Note: hybrid_score might return None if models miss coverage
-        # In that case, fall back to the initial content score
-        h_score = score_hybrid(user_id, item_id, w_content=0.4, w_cf=0.4, w_tt=0.2)
-        
-        final_score = h_score if h_score is not None else res["score"]
-        ranked_results.append({"item_id": item_id, "score": float(final_score)})
-    
-    # Sort by hybrid score
-    ranked_results.sort(key=lambda x: x["score"], reverse=True)
-    
-    return {"recommendations": ranked_results[:top_k]}
+    results = faiss_search(vec, k=top_k)
+    return {"recommendations": results}
 
 
 ############################################

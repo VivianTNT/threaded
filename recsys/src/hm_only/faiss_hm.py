@@ -27,8 +27,8 @@ X = np.array(faiss_pack["X"]).astype("float32")
 print(f"[repair_faiss_hm] Original FAISS items: {len(item_ids)}")
 print(f"[repair_faiss_hm] Original max item_id: {item_ids.max()}")
 
-# Keep only H&M items
-mask = item_ids < HM_MAX_ID
+# Keep only H&M items (HM item_ids are large: int("2"+article_id) >= 2e9)
+mask = item_ids >= HM_MAX_ID
 item_ids_hm = item_ids[mask]
 X_hm = X[mask]
 

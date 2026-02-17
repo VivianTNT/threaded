@@ -9,8 +9,10 @@ ART  = Path("recsys/artifacts")
 def load_embedding_cache(path):
     if path.exists():
         cache = joblib.load(path)
-        print(f"[build_faiss] loaded {len(cache['item_ids'])} cached embeddings from {path.name}")
-        return cache["X"], cache["item_ids"]
+        ids = cache.get("item_ids", cache.get("ids", []))
+        X = cache.get("X", cache.get("X_img", None))
+        print(f"[build_faiss] loaded {len(ids)} cached embeddings from {path.name}")
+        return X, ids
     else:
         print(f"[build_faiss] no cache found at {path.name}")
         return None, []
@@ -62,18 +64,12 @@ if __name__ == "__main__":
     new_items = items[~items["item_id"].isin(old_item_ids)]
     if len(new_items) > 0:
         print(f"[build_faiss] embedding {len(new_items)} new items ...")
-        # Build new image and text embeddings
-        new_image_X = build_item_matrix(new_items).astype("float16")
-        # For text embeddings, assuming a similar function exists; if not, use zeros
-        try:
-            from recsys.src.text_embeddings import build_text_matrix
-            new_text_X = build_text_matrix(new_items).astype("float16")
-        except ImportError:
-            print("[build_faiss] text embedding function not found, using zeros for text embeddings")
-            new_text_X = np.zeros_like(new_image_X, dtype="float16")
+        # Build new image embeddings (uses SentenceTransformer, 384-dim)
+        new_image_X = build_item_matrix(new_items).astype("float32")
 
-        # Fuse new embeddings
-        new_fused_X = fuse_embeddings(new_image_X, new_text_X)
+        # If we have cached image embeddings, just use image-only (CLIP image is 512-dim, consistent with cached)
+        # Skip text fusion since cached text is 512-dim (CLIP) but new text would be 384-dim (SentenceTransformer)
+        new_fused_X = new_image_X
 
         # Combine old and new fused embeddings
         if old_fused_X is not None:
@@ -104,5 +100,4 @@ if __name__ == "__main__":
 
     ART.mkdir(parents=True, exist_ok=True)
     joblib.dump(payload, ART / "faiss_items.joblib")
-    joblib.dump({"X": X, "item_ids": item_ids}, ART / "item_embs.joblib")
     print(f"[build_faiss] Indexed {X.shape[0]} items (dim={dim})")
