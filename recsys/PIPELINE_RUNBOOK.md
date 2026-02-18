@@ -2,11 +2,10 @@
 
 End-to-end commands and scripts for the hybrid recommendation system.
 
-**Architecture overview:**
-1. **ALS (collab filtering)** – H&M only, no images → `user_vectors_mahout_hm`, `item_vectors_mahout_hm`
-2. **Two-Tower** – Uses Mahout vectors; optionally fine-tuned on RR
-3. **Content filtering** – FAISS indices: H&M (image+text), RR (text-only)
-4. **Hybrid** – Weighted sum of content + collab + Two-Tower
+**Architecture overview (generalizable to new users/products):**
+1. **Content filtering** – FAISS indices: H&M (image+text), RR (text-only)
+2. **Two-Tower** – Feature-based, trained on HM + RR interactions
+3. **Hybrid** – Content + Two-Tower (no ALS; ALS is ID-based and doesn't generalize)
 
 ---
 
@@ -25,11 +24,14 @@ pip install -e .  # or your venv
 # 1. Merge H&M + RetailRocket into events.parquet, items.parquet
 python -m recsys.src.make_parquets
 
-# 2. Extract H&M-only events (for content user vectors, Two-Tower training)
+# 2. Extract H&M-only events
 python -m recsys.src.hm_only.events_hm
+
+# 3. Extract RR-only events (for RR user vectors, combined Two-Tower)
+python -m recsys.src.hm_only.events_rr
 ```
 
-**Outputs:** `recsys/data/events.parquet`, `items.parquet`, `events_hm.parquet`
+**Outputs:** `events.parquet`, `items.parquet`, `events_hm.parquet`, `events_rr.parquet`
 
 ---
 
@@ -88,29 +90,29 @@ python -m recsys.src.hm_only.faiss_rr
 ### 3c. User Vectors (Content)
 
 ```bash
-# Build user vectors from events_hm + faiss_items_hm
+# H&M user vectors
 python -m recsys.src.user_modeling
+
+# RR user vectors
+python -m recsys.src.user_modeling_rr
 ```
 
-**Outputs:** `user_vectors_hm.joblib`
+**Outputs:** `user_vectors_hm.joblib`, `user_vectors_rr.joblib`
 
 ---
 
-## Phase 4: Two-Tower (Mahout → Fine-tune)
+## Phase 4: Two-Tower (Feature-Based, Generalizable)
 
 ```bash
-# 1. Build training pairs from H&M events
+# 1. Build training pairs
 python -m recsys.src.hm_only.build_train_pairs_hm
+python -m recsys.src.hm_only.build_train_pairs_rr
 
-# 2. Train Two-Tower on H&M (uses user_vectors_mahout_hm, item_vectors_mahout_hm)
-python -m recsys.src.models.train_mahout_finetune --dataset hm --epochs 3
-
-# 3. (Optional) Fine-tune on RR for transfer learning
-python -m recsys.src.models.train_mahout_finetune --dataset rr --epochs 2 \
-  --load_model recsys/artifacts/mahout_finetuned_hm.pt
+# 2. Train on BOTH HM + RR (uses H&M images/text + RR interactions)
+python -m recsys.src.models.train_content_two_tower --dataset both --epochs 3
 ```
 
-**Outputs:** `mahout_finetuned_hm.pt` (and optionally `mahout_finetuned_rr.pt`)
+**Outputs:** `content_two_tower_combined.pt` (generalizes to new users and new products)
 
 ---
 
