@@ -17,11 +17,18 @@ async def fetch_html(url: str, browser, use_cache=True, timeout_ms=20000, retrie
 
     for attempt in range(retries + 1):
         try:
-            ctx = await browser.new_context(user_agent=UA)
+            ctx = await browser.new_context(
+                user_agent=UA,
+                viewport={'width': 1280, 'height': 800},
+                device_scale_factor=1,
+            )
+            # Basic steath script to hide that this is an automated browser
+            await ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
             page = await ctx.new_page()
             
             # Navigate and wait for network to be mostly idle
-            await page.goto(url, timeout=timeout_ms, wait_until="networkidle")
+            await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
             
             # For Uniqlo specifically, wait for swiper to initialize
             if "uniqlo.com" in url:
@@ -35,12 +42,22 @@ async def fetch_html(url: str, browser, use_cache=True, timeout_ms=20000, retrie
                     await page.wait_for_timeout(1000)
             else:
                 await page.wait_for_timeout(500 + random.randint(0, 500))
+
+            # Short random sleep to simulate human reading time
+            await page.wait_for_timeout(2000 + random.randint(0, 1000))
             
             html = await page.content()
             await ctx.close()
             # save_raw(url, html)
             return html
-        except Exception:
+        except Exception as e:
+            if ctx:
+                await ctx.close()
+
+            print(f"  [Attempt {attempt+1}/{retries+1}] Failed: {e}")
+
             if attempt == retries:
-                raise
+                print(f"  [GIVE UP] Could not fetch {url}")
+                return None
+                # raise
             await asyncio.sleep(1.0 + attempt)

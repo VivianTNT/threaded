@@ -40,6 +40,11 @@ async def process(url: str, browser):
     prod = normalize(url, domain, raw)
     append_jsonl(OUT, orjson.loads(prod.model_dump_json()))
 
+    if not prod.image_url or not prod.name or not prod.price:
+        # Skip upsert if critical fields are missing
+        print(f"  [WARN] Missing critical fields for {url}: name={prod.name}, price={prod.price}, image_url={prod.image_url}")
+        return None
+
     product_dict = {
         "product_url": str(prod.url) if prod.url is not None else None,
         "image_url": str(prod.image_url) if prod.image_url is not None else None,

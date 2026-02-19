@@ -82,3 +82,5 @@ playwright/
 .chromium/
 .user-data-dir/
 playwright_user_data/
+
+data/
