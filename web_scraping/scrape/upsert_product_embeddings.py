@@ -9,7 +9,6 @@ from pathlib import Path
 import requests
 import torch
 from PIL import Image, UnidentifiedImageError
-from sentence_transformers import SentenceTransformer
 from transformers import CLIPModel, CLIPProcessor
 
 from .supabase_client import supabase
@@ -24,28 +23,26 @@ class ProductEmbeddingsUpserter:
 
     Expected DB setup:
     - `product_embeddings.product_id` has a UNIQUE constraint
-    - `product_embeddings.text_embedding` is pgvector with dimension 384
-      (for all-MiniLM-L6-v2)
+    - `product_embeddings.text_embedding` is pgvector with dimension 512
+      (for clip-vit-base-patch32 text features)
     - `product_embeddings.image_embedding` is pgvector with dimension 512
       (for clip-ViT-B-32)
     """
 
     def __init__(
         self,
-        text_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
-        image_model_name: str = "openai/clip-vit-base-patch32",
+        clip_model_name: str = "openai/clip-vit-base-patch32",
         image_timeout_seconds: int = 15,
         skipped_log_path: str = "web_scraping/scrape/logs/skipped_product_embeddings.jsonl",
     ) -> None:
-        self.text_model = SentenceTransformer(text_model_name)
         self.device = (
             "mps"
             if torch.backends.mps.is_available()
             else ("cuda" if torch.cuda.is_available() else "cpu")
         )
-        self.image_model = CLIPModel.from_pretrained(image_model_name).to(self.device)
-        self.image_processor = CLIPProcessor.from_pretrained(image_model_name)
-        self.image_model.eval()
+        self.clip_model = CLIPModel.from_pretrained(clip_model_name).to(self.device)
+        self.clip_processor = CLIPProcessor.from_pretrained(clip_model_name)
+        self.clip_model.eval()
         self.image_timeout_seconds = image_timeout_seconds
         self.skipped_log_path = Path(skipped_log_path)
         self.skipped_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +58,7 @@ class ProductEmbeddingsUpserter:
             end = start + batch_size - 1
             response = (
                 supabase.table("products")
-                .select("id,image_url,description")
+                .select("id,image_url,description,name,brand_name")
                 .order("id")
                 .range(start, end)
                 .execute()
@@ -77,11 +74,25 @@ class ProductEmbeddingsUpserter:
         logger.info("Fetched %d products from table 'products'.", len(all_products))
         return all_products
 
-    def _embed_text(self, text: Optional[str]) -> Optional[List[float]]:
-        if not text:
-            return None
-        vector = self.text_model.encode([text], normalize_embeddings=True)[0]
-        return vector.astype("float32").tolist()
+    def _build_text_input(self, product: Dict[str, Any]) -> str:
+        brand_part = str(product.get("brand_name") or "").strip()
+        text_source = product.get("name") or product.get("description") or ""
+        text_part = str(text_source).strip()
+        text = f"{brand_part} {text_part}".strip()
+        return text if text else "generic product"
+
+    def _embed_text(self, product: Dict[str, Any]) -> Optional[List[float]]:
+        text = self._build_text_input(product)
+        with torch.no_grad():
+            inputs = self.clip_processor(
+                text=[text],
+                return_tensors="pt",
+                truncation=True,
+                padding=True,
+            ).to(self.device)
+            text_out = self.clip_model.get_text_features(**inputs)
+            vector = self._coerce_clip_vector(text_out, modality="text")
+        return vector.cpu().numpy().flatten().astype("float32").tolist()
 
     def _download_image(self, image_url: str) -> Optional[Image.Image]:
         try:
@@ -104,31 +115,42 @@ class ProductEmbeddingsUpserter:
         if image is None:
             return None
         with torch.no_grad():
-            inputs = self.image_processor(images=image, return_tensors="pt").to(
+            inputs = self.clip_processor(images=image, return_tensors="pt").to(
                 self.device
             )
-            image_out = self.image_model.get_image_features(**inputs)
-            # Some transformers builds return a model output object instead of a tensor.
-            if isinstance(image_out, torch.Tensor):
-                vector = image_out
-            elif hasattr(image_out, "image_embeds") and image_out.image_embeds is not None:
-                vector = image_out.image_embeds
-            elif hasattr(image_out, "pooler_output") and image_out.pooler_output is not None:
-                vector = image_out.pooler_output
-                if hasattr(self.image_model, "visual_projection"):
-                    proj = self.image_model.visual_projection
-                    # Only project when dimensions match the projection input.
-                    if (
-                        hasattr(proj, "in_features")
-                        and vector.shape[-1] == proj.in_features
-                    ):
-                        vector = proj(vector)
-            else:
-                raise TypeError(
-                    f"Unsupported CLIP output type from get_image_features: {type(image_out)}"
-                )
+            image_out = self.clip_model.get_image_features(**inputs)
+            vector = self._coerce_clip_vector(image_out, modality="image")
             vector = vector / vector.norm(dim=-1, keepdim=True)
         return vector.cpu().numpy().flatten().astype("float32").tolist()
+
+    def _coerce_clip_vector(self, output: Any, modality: str) -> torch.Tensor:
+        """
+        Coerce CLIP feature outputs to a tensor across transformers version differences.
+        """
+        if isinstance(output, torch.Tensor):
+            return output
+
+        embeds_attr = "text_embeds" if modality == "text" else "image_embeds"
+        projection_attr = "text_projection" if modality == "text" else "visual_projection"
+
+        embeds = getattr(output, embeds_attr, None)
+        if isinstance(embeds, torch.Tensor):
+            return embeds
+
+        pooled = getattr(output, "pooler_output", None)
+        if isinstance(pooled, torch.Tensor):
+            proj = getattr(self.clip_model, projection_attr, None)
+            if (
+                proj is not None
+                and hasattr(proj, "in_features")
+                and pooled.shape[-1] == proj.in_features
+            ):
+                return proj(pooled)
+            return pooled
+
+        raise TypeError(
+            f"Unsupported CLIP output type for {modality}: {type(output)}"
+        )
 
     def build_embedding_record(self, product: Dict[str, Any]) -> Dict[str, Any]:
         product_id = product.get("id")
@@ -137,7 +159,7 @@ class ProductEmbeddingsUpserter:
 
         return {
             "product_id": str(product_id),
-            "text_embedding": self._embed_text(product.get("description")),
+            "text_embedding": self._embed_text(product),
             "image_embedding": self._embed_image(product.get("image_url")),
         }
 
