@@ -32,6 +32,7 @@ logs/
 reports/
 debug/
 __debug__/
+web_scraping/scrape/logs/
 
 # ---- Notebooks / Checkpoints ----
 .ipynb_checkpoints/
