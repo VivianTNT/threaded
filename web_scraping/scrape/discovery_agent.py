@@ -10,7 +10,7 @@ from playwright_stealth import Stealth
 try:
     from .schema import Product
     from .discovery_fetcher import init_browser, fetch_html 
-    from .parser_generic import extract_generic as generic_parser
+    from .adapters.adapter_generic import extract_generic as generic_parser
     from .supabase_client import supabase
     
 except ImportError as e:
@@ -34,6 +34,9 @@ RESULTS_FILE_PATH = os.path.join(WEB_SCRAPING_DIR, "new_product_urls.txt")
 
 # Limit for testing purposes (prevent infinite crawling)
 MAX_PRODUCTS_TO_FIND = 800
+
+# Set to True to enable manual user verification for each domain
+VERIFY_DOMAINS = True
 
 # Domains to Explicitly Skip
 SKIP_DOMAINS = {
@@ -308,7 +311,21 @@ async def run_discovery_cycle(search_queries: List[str]):
         print(f"\n[TRIAGE] Identified {len(triage_queue)} unique retail-like domains for scoping.")
 
         all_category_links: Set[str] = set()
+
+        auto_approve_all = False
+
         for domain, url in triage_queue.items():
+            if VERIFY_DOMAINS and not auto_approve_all:
+                print(f"\n[VERIFY] Discovered brand: {domain}")
+                user_choice = input("  -> Scrape this domain? [y]es / [n]o / [a]ll: ").strip().lower()
+
+                if user_choice == 'n':
+                    print("  -> Skipping.")
+                    continue
+                elif user_choice == 'a' or user_choice == 'all':
+                    auto_approve_all = True
+                    print("  -> Approving all remaining domains...")
+
             print(f"\nTesting Domain: {domain} (URL: {url})")
             result = await run_scoping_test(url, domain, browser_context)
             if result:
@@ -367,9 +384,9 @@ async def run_discovery_cycle(search_queries: List[str]):
 if __name__ == '__main__':
     queries = [
         # "gap clothing",
-        'men coats online shopping',
+        'men clothing online shopping',
         # 'online clothing stores',
-        "winter clothing shopping",
+        "spring clothing shopping",
     ]
 
     asyncio.run(run_discovery_cycle(queries))
