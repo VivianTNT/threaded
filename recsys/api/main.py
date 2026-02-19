@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import numpy as np
 import joblib
 from PIL import Image
@@ -8,6 +8,7 @@ import io
 from pathlib import Path
 import torch
 from transformers import CLIPProcessor, CLIPModel
+from typing import Union
 
 # Paths
 BASE = Path("recsys")
@@ -117,13 +118,71 @@ async def recommend_from_image(file: UploadFile = File(...), top_k: int = 20):
 
 
 ############################################
-# 3. Recommend for user_id
+# 3. Recommend from Supabase catalog (new users + new products)
+############################################
+class ProductInput(BaseModel):
+    id: Union[int, str, None] = None
+    title: str = ""
+    name: str = ""
+    description: str = ""
+
+
+class HybridCatalogRequest(BaseModel):
+    liked_products: list[ProductInput] = Field(default_factory=list)
+    catalog_products: list[ProductInput] = Field(default_factory=list)
+    top_k: int = 20
+    strategy: str = "hybrid"  # content | two_tower | hybrid
+    exclude_ids: list[Union[int, str]] = Field(default_factory=list)
+
+
+@app.post("/recommend/hybrid/catalog")
+def recommend_hybrid_catalog(req: HybridCatalogRequest):
+    """
+    Generalizable recommendation route for disjoint catalogs (e.g. Supabase).
+    Uses content/two-tower/hybrid from vectors, no ALS IDs required.
+    """
+    from recsys.src.production_recommender import recommend as recommend_from_catalog
+
+    liked_products = [
+        {
+            "title": p.title or p.name or "",
+            "description": p.description or "",
+        }
+        for p in req.liked_products
+    ]
+
+    catalog_products = []
+    catalog_ids = []
+    for p in req.catalog_products:
+        if p.id is None:
+            continue
+        catalog_products.append(
+            {
+                "title": p.title or p.name or "",
+                "description": p.description or "",
+            }
+        )
+        catalog_ids.append(p.id)
+
+    recommendations = recommend_from_catalog(
+        liked_products=liked_products,
+        catalog_products=catalog_products,
+        catalog_ids=catalog_ids,
+        top_k=req.top_k,
+        strategy=req.strategy,
+        exclude_ids=req.exclude_ids,
+    )
+    return {"recommendations": recommendations}
+
+
+############################################
+# 4. Recommend for user_id
 ############################################
 @app.get("/recommend/user/{user_id}")
 def recommend_user(user_id: int, top_k: int = 20, strategy: str = "content"):
     """
     Recommend items for a user.
-    strategy: "content" (FAISS), "collab" (ALS), or "hybrid" (content+CF+TwoTower).
+    strategy: "content" (FAISS), "collab" (ALS), or "hybrid" (content+TwoTower).
     Default: content. If collab requested but ALS not available, falls back to content.
     """
     if strategy in ("content", "collab"):
@@ -138,7 +197,8 @@ def recommend_user(user_id: int, top_k: int = 20, strategy: str = "content"):
         ranked_results = []
         for res in candidates:
             item_id = res["item_id"]
-            h_score = score_hybrid(user_id, item_id, w_content=0.4, w_cf=0.4, w_tt=0.2)
+            # hybrid_ranker.score_hybrid currently combines content + two-tower
+            h_score = score_hybrid(user_id, item_id, w_content=0.5, w_tt=0.5)
             final_score = h_score if h_score is not None else res["score"]
             ranked_results.append({"item_id": item_id, "score": float(final_score)})
         ranked_results.sort(key=lambda x: x["score"], reverse=True)
@@ -153,7 +213,7 @@ def recommend_user(user_id: int, top_k: int = 20, strategy: str = "content"):
 
 
 ############################################
-# 4. Item-to-item similarity
+# 5. Item-to-item similarity
 ############################################
 @app.get("/recommend/item/{item_id}")
 def recommend_item(item_id: int, top_k: int = 20):
